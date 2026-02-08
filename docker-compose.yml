@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  backend-v1:
+    build: ./backend
+    environment:
+      - VERSION_TEXT=Response from V1 (Stable)
+    ports:
+      - "8081:8080"
+    networks:
+      - apisix-net
+
+  backend-v2:
+    build: ./backend
+    environment:
+      - VERSION_TEXT=Response from V2 (Canary)
+    ports:
+      - "8082:8080"
+    networks:
+      - apisix-net
+
+  opa:
+    build: ./opa
+    ports:
+      - "8181:8181"
+    networks:
+      - apisix-net
+
+  apisix:
+    image: apache/apisix:latest
+    ports:
+      - "9080:9080"
+    volumes:
+      - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+      - ./apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - apisix-net
+
+networks:
+  apisix-net:
+    driver: bridge

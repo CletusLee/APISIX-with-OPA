@@ -1,0 +1,38 @@
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+
+# Build Artifacts
+target/
+build/
+dist/
+*.class
+*.jar
+*.war
+*.ear
+
+# Logs
+*.log
+logs/
+
+# Temporary Test Output
+output_*.txt
+test_*.txt
+
+# Docker
+docker-compose.override.yml
+
+# Environment Variables
+.env
