@@ -1,39 +1,75 @@
+# ============================================================================
+# APISIX Standalone Configuration - Canary Deployment with OPA
+# ============================================================================
+# This configuration implements a canary deployment strategy where:
+# - Normal users are routed to V1 (Stable)
+# - Beta users are routed to V2 (Canary)
+# - OPA (Open Policy Agent) makes the routing decision based on user identity
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# UPSTREAMS: Define backend service targets
+# ----------------------------------------------------------------------------
 upstreams:
+  # Backend V1 - Stable version (default)
   - id: 1
     name: backend-v1
-    # Use service name from docker-compose
+    # Points to host machine port 8081 where backend-v1 container is exposed
+    # Using host.docker.internal allows APISIX container to reach host-exposed ports
     nodes:
       "host.docker.internal:8081": 1
     type: roundrobin
+    
+  # Backend V2 - Canary version (for beta users)
   - id: 2
     name: backend-v2
-    # Use service name from docker-compose
+    # Points to host machine port 8082 where backend-v2 container is exposed
     nodes:
       "host.docker.internal:8082": 1
     type: roundrobin
 
+# ----------------------------------------------------------------------------
+# ROUTES: Define request routing rules
+# ----------------------------------------------------------------------------
 routes:
   - id: 1
+    # Match all requests
     uri: /*
-    upstream_id: 1 # Default to V1
+    
+    # Default upstream: V1 (Stable)
+    # This is used when no routing override is applied
+    upstream_id: 1
+    
+    # Plugin chain for OPA-based canary routing
     plugins:
+      # -----------------------------------------------------------------------
+      # Plugin 1: serverless-pre-function (Lua script)
+      # -----------------------------------------------------------------------
+      # Purpose: Call OPA policy engine and inject routing headers
+      # Execution Phase: rewrite (runs before upstream selection)
+      # -----------------------------------------------------------------------
       serverless-pre-function:
         phase: rewrite
         functions:
           - |
             return function(conf, ctx)
+              -- Load required APISIX and OpenResty modules
               local core = require("apisix.core")
               local http = require("resty.http")
               
-              -- Get x-user-id header
+              -- Extract x-user-id header from incoming request
+              -- This header determines which backend version to route to
               local user_id = core.request.header(ctx, "x-user-id")
               
-              -- Call OPA
+              -- Initialize HTTP client for OPA communication
               local httpc = http.new()
-              httpc:set_timeout(3000)
+              httpc:set_timeout(3000)  -- 3 second timeout for OPA calls
               
+              -- Call OPA policy endpoint
+              -- OPA evaluates the policy and returns routing decision
               local opa_res, err = httpc:request_uri("http://172.20.0.3:8181/v1/data/apisix/route", {
                 method = "POST",
+                -- Send request context to OPA
                 body = core.json.encode({
                   input = {
                     type = "http",
@@ -49,38 +85,63 @@ routes:
                 }
               })
               
+              -- Error handling: OPA unreachable
               if not opa_res then
                 core.log.error("failed to call OPA: ", err)
-                return 503
+                return 503  -- Service Unavailable
               end
               
+              -- Error handling: OPA returned non-200 status
               if opa_res.status ~= 200 then
                 core.log.error("OPA returned non-200: ", opa_res.status)
                 return 503
               end
               
+              -- Parse OPA response
               local opa_data = core.json.decode(opa_res.body)
               
+              -- Error handling: Invalid OPA response structure
               if not opa_data or not opa_data.result then
                 core.log.error("invalid OPA response")
                 return 503
               end
               
+              -- Check OPA authorization decision
+              -- If allow = false, deny the request
               if not opa_data.result.allow then
-                return 403
+                return 403  -- Forbidden
               end
               
-              -- Set header for traffic-split if OPA returned headers
+              -- Check if OPA returned routing headers
+              -- If X-Target-Upstream header is present, inject it into the request
+              -- This header will be used by traffic-split plugin to route to V2
               if opa_data.result.headers and opa_data.result.headers["X-Target-Upstream"] then
                 core.request.set_header(ctx, "X-Target-Upstream", opa_data.result.headers["X-Target-Upstream"])
               end
+              
+              -- Continue processing (no return = allow request to proceed)
             end
+            
+      # -----------------------------------------------------------------------
+      # Plugin 2: traffic-split
+      # -----------------------------------------------------------------------
+      # Purpose: Route to different upstreams based on injected headers
+      # Priority: Lower than serverless-pre-function (runs after)
+      # -----------------------------------------------------------------------
       traffic-split:
         rules:
+          # Rule: If X-Target-Upstream header equals "v2", route to V2 backend
           - match:
               - vars: 
+                  # Check if X-Target-Upstream header = "v2"
+                  # This header is injected by OPA policy for beta users
                   - ["http_x_target_upstream", "==", "v2"]
+            # When matched, route to upstream_id: 2 (backend-v2)
             weighted_upstreams:
               - upstream_id: 2
                 weight: 1
+                
+          # Default behavior (no match):
+          # Request continues to upstream_id: 1 (backend-v1) as defined in route
+
 #END
