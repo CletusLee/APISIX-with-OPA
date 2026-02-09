@@ -45,8 +45,8 @@ flowchart TB
     Client1 --> APISIX
     Client2 --> APISIX
     APISIX --> Lua
-    Lua -->|4. Authz Check<br/>{input: ...}| OPA
-    OPA -->|5. Decision<br/>{upstream: v2}| Lua
+    Lua -->|4. Authz Check<br/>(input: ...)| OPA
+    OPA -->|5. Decision<br/>(upstream: v2)| Lua
     Lua -->|6. Route| V2
     Lua -->|6. Default| V1
     
