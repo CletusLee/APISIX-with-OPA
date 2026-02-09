@@ -1,0 +1,29 @@
+# OPA Server Configuration - Bundle Polling Mode
+# ============================================================================
+# This configuration enables OPA to poll bundles from the Bundle Server
+# instead of loading policies directly from files.
+#
+# The bundle contains:
+# - Platform policies (/policy/platform.rego)
+# - Service policies (/policy/service.rego)  
+# - Canary data (/data/data.json)
+# ============================================================================
+
+# Service configuration
+services:
+  bundle-server:
+    url: http://bundle-server:8888
+
+# Bundle configuration
+bundles:
+  authz:
+    service: bundle-server
+    resource: /bundles/authz.tar.gz
+    persist: false
+    polling:
+      min_delay_seconds: 5
+      max_delay_seconds: 10
+
+# Decision logging (optional - for debugging)
+decision_logs:
+  console: true

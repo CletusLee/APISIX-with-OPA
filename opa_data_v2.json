@@ -1,0 +1,1 @@
+{"decision_id":"4789c498-66b5-4a5a-bb7d-0b042beac643","result":{"backend":{"authz":{"allow":true,"headers":{"X-User-Type":"normal"}}},"data":{"canary":{"allowlist_users":["beta_user"],"rollout_percentage":10}},"platform":{"allow":true}}}

@@ -1,6 +1,15 @@
 FROM eclipse-temurin:17-jdk
+
 WORKDIR /app
-COPY SimpleServer.java .
-# Use Java 11+ feature: Launch single-file source code
-CMD ["java", "SimpleServer.java"]
+
+# Copy source file
+COPY Backend.java .
+
+# Compile
+RUN javac Backend.java
+
+# Expose port
 EXPOSE 8080
+
+# Run the server
+CMD ["java", "Backend"]

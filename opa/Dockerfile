@@ -1,4 +1,9 @@
 FROM openpolicyagent/opa:latest
-COPY policy.rego /policy.rego
-CMD ["run", "--server", "--addr=:8181", "/policy.rego"]
-EXPOSE 8181
+
+# Copy OPA configuration for bundle polling
+COPY config.yaml /config/config.yaml
+
+# No policies copied - they come from the bundle!
+
+# Run OPA server with config, binding to all interfaces
+CMD ["run", "--server", "--addr", "0.0.0.0:8181", "--config-file", "/config/config.yaml"]

@@ -1,0 +1,8 @@
+{
+    "canary":  {
+                   "allowlist_users":  [
+                                           "beta_user"
+                                       ],
+                   "rollout_percentage":  10
+               }
+}

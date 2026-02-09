@@ -6,17 +6,17 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 
-public class SimpleServer {
+public class Backend {
     public static void main(String[] args) throws IOException {
         int port = 8080;
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
-        
+
         // Get version text from ENV, default to "Unknown Version"
         String versionText = System.getenv("VERSION_TEXT");
         if (versionText == null) {
             versionText = "Response from Unknown Version";
         }
-        
+
         final String responseMessage = versionText;
 
         server.createContext("/", new HttpHandler() {

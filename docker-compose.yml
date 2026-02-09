@@ -1,6 +1,44 @@
 version: '3.8'
 
 services:
+  # ============================================================================
+  # Bundle Server - Hosts OPA bundle files
+  # ============================================================================
+  bundle-server:
+    build: ./bundle-server
+    ports:
+      - "8888:8888"
+    networks:
+      - apisix-net
+
+  # ============================================================================
+  # Bundle Builder - Assembles and uploads bundles
+  # ============================================================================
+  bundle-builder:
+    build: ./bundle-builder
+    volumes:
+      # Mount project root to /app/repo for reading policies and data
+      - ./:/app/repo
+    depends_on:
+      - bundle-server
+    networks:
+      - apisix-net
+
+  # ============================================================================
+  # OPA - Policy engine (now polling bundles)
+  # ============================================================================
+  opa:
+    build: ./opa
+    ports:
+      - "8181:8181"
+    depends_on:
+      - bundle-builder
+    networks:
+      - apisix-net
+
+  # ============================================================================
+  # Backend Services
+  # ============================================================================
   backend-v1:
     build: ./backend
     environment:
@@ -19,13 +57,9 @@ services:
     networks:
       - apisix-net
 
-  opa:
-    build: ./opa
-    ports:
-      - "8181:8181"
-    networks:
-      - apisix-net
-
+  # ============================================================================
+  # APISIX Gateway
+  # ============================================================================
   apisix:
     image: apache/apisix:latest
     ports:
@@ -35,6 +69,10 @@ services:
       - ./apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      - opa
+      - backend-v1
+      - backend-v2
     networks:
       - apisix-net
 

@@ -53,26 +53,21 @@ routes:
         functions:
           - |
             return function(conf, ctx)
-              -- Load required APISIX and OpenResty modules
               local core = require("apisix.core")
               local http = require("resty.http")
               
-              -- Extract x-user-id header from incoming request
-              -- This header determines which backend version to route to
-              local user_id = core.request.header(ctx, "x-user-id")
+              -- Extract user ID
+              local user_id = core.request.header(ctx, "x-user-id") or "NONE"
               
-              -- Initialize HTTP client for OPA communication
+              -- Initialize HTTP client
               local httpc = http.new()
-              httpc:set_timeout(3000)  -- 3 second timeout for OPA calls
+              httpc:set_timeout(3000)
               
-              -- Call OPA policy endpoint
-              -- OPA evaluates the policy and returns routing decision
-              local opa_res, err = httpc:request_uri("http://172.20.0.3:8181/v1/data/apisix/route", {
+              -- Call OPA
+              local opa_res, err = httpc:request_uri("http://opa:8181/v1/data/backend/authz", {
                 method = "POST",
-                -- Send request context to OPA
                 body = core.json.encode({
                   input = {
-                    type = "http",
                     request = {
                       headers = {
                         ["x-user-id"] = user_id
@@ -85,63 +80,49 @@ routes:
                 }
               })
               
-              -- Error handling: OPA unreachable
               if not opa_res then
-                core.log.error("failed to call OPA: ", err)
-                return 503  -- Service Unavailable
+                core.log.error("OPA call failed: ", tostring(err))
+                return 503
               end
               
-              -- Error handling: OPA returned non-200 status
               if opa_res.status ~= 200 then
-                core.log.error("OPA returned non-200: ", opa_res.status)
+                core.log.error("OPA returned non-200 status: ", opa_res.status)
                 return 503
               end
               
-              -- Parse OPA response
-              local opa_data = core.json.decode(opa_res.body)
-              
-              -- Error handling: Invalid OPA response structure
-              if not opa_data or not opa_data.result then
-                core.log.error("invalid OPA response")
+              -- Parse response
+              local opa_data, decode_err = core.json.decode(opa_res.body)
+              if not opa_data then
+                core.log.error("Failed to decode OPA response: ", tostring(decode_err))
                 return 503
               end
               
-              -- Check OPA authorization decision
-              -- If allow = false, deny the request
-              if not opa_data.result.allow then
-                return 403  -- Forbidden
+              -- Check structure
+              if not opa_data.result then
+                core.log.error("OPA response missing 'result' field")
+                return 503
               end
               
-              -- Check if OPA returned routing headers
-              -- If X-Target-Upstream header is present, inject it into the request
-              -- This header will be used by traffic-split plugin to route to V2
-              if opa_data.result.headers and opa_data.result.headers["X-Target-Upstream"] then
-                core.request.set_header(ctx, "X-Target-Upstream", opa_data.result.headers["X-Target-Upstream"])
+              -- Check authorization
+              if opa_data.result.allow == false then
+                core.log.warn("OPA denied request")
+                return 403
               end
               
-              -- Continue processing (no return = allow request to proceed)
-            end
-            
-      # -----------------------------------------------------------------------
-      # Plugin 2: traffic-split
-      # -----------------------------------------------------------------------
-      # Purpose: Route to different upstreams based on injected headers
-      # Priority: Lower than serverless-pre-function (runs after)
-      # -----------------------------------------------------------------------
-      traffic-split:
-        rules:
-          # Rule: If X-Target-Upstream header equals "v2", route to V2 backend
-          - match:
-              - vars: 
-                  # Check if X-Target-Upstream header = "v2"
-                  # This header is injected by OPA policy for beta users
-                  - ["http_x_target_upstream", "==", "v2"]
-            # When matched, route to upstream_id: 2 (backend-v2)
-            weighted_upstreams:
-              - upstream_id: 2
-                weight: 1
+              -- Inject routing header if present and set upstream
+              local target = nil
+              if opa_data.result.headers then
+                  target = opa_data.result.headers["X-Target-Upstream"] or opa_data.result.headers["x-target-upstream"]
+              end
+              
+              if target then
+                core.request.set_header(ctx, "X-Target-Upstream", target)
                 
-          # Default behavior (no match):
-          # Request continues to upstream_id: 1 (backend-v1) as defined in route
+                -- Direct upstream selection (v2 -> ID 2)
+                if target == "v2" then
+                    ctx.upstream_id = 2
+                end
+              end
+            end
 
 #END

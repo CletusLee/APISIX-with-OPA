@@ -1,173 +1,143 @@
-# APISIX + OPA Canary PoC
+# APISIX + OPA Canary Deployment PoC
 
-This project demonstrates a Canary Deployment routing strategy using APISIX and OPA (Open Policy Agent).
-APISIX runs in Standalone mode using local `apisix.yaml` configuration.
+This project demonstrates a robust **Canary Deployment** routing strategy using **APISIX** and **OPA (Open Policy Agent)**. It implements a **File-Based Hybrid Bundle Architecture**, where policy logic is decoupled from configuration data.
 
 ## Architecture Diagram
 
+The system uses a sidecar pattern where APISIX offloads routing decisions to OPA. OPA dynamically fetches policy bundles from a central server.
+
 ```mermaid
 flowchart TB
-    subgraph "Client Requests"
+    subgraph "Client Layer"
         Client1["👤 Normal User<br/>(x-user-id: alice)"]
         Client2["👤 Beta User<br/>(x-user-id: beta_user)"]
     end
+
+    subgraph "Deployment Pipeline"
+        Repo["� Repository<br/>/policies/backend/<br/>• policy.rego<br/>• data.json"]
+        Builder["🔧 Bundle Builder<br/>Service<br/>(Polls SCM/File System)"]
+        Server["� Bundle Server<br/>Artifact Repository<br/>Port: 8888"]
+    end
     
-    subgraph "APISIX Gateway :9080"
-        APISIX["🚪 APISIX<br/>Standalone Mode"]
+    subgraph "Edge Gateway (APISIX)"
+        APISIX["� APISIX<br/>Gateway :9080"]
         
-        subgraph "Plugin Chain"
-            direction TB
-            Serverless["📝 serverless-pre-function<br/>Lua Script<br/>━━━━━━━━━━<br/>1. Extract x-user-id<br/>2. Call OPA API<br/>3. Parse routing decision<br/>4. Inject X-Target-Upstream header"]
-            TrafficSplit["🔀 traffic-split<br/>━━━━━━━━━━<br/>If X-Target-Upstream = v2<br/>→ Route to Backend V2<br/>Else use default Backend V1"]
-            
-            Serverless --> TrafficSplit
+        subgraph "Routing Logic"
+            Lua["📝 Serverless Lua<br/>1. Extract Header<br/>2. Call OPA<br/>3. Enforce Route"]
         end
     end
     
-    subgraph "Policy Engine :8181"
-        OPA["🔐 OPA<br/>Open Policy Agent<br/>━━━━━━━━━━<br/>policy.rego<br/>━━━━━━━━━━<br/>Check x-user-id:<br/>• beta_user → inject v2 header<br/>• others → no extra headers"]
+    subgraph "Policy Engine"
+        OPA["🔐 OPA Sidecar<br/>Port: 8181"]
     end
     
-    subgraph "Backend Services"
-        V1["✅ Backend V1<br/>:8081<br/>Stable Version<br/>━━━━━━━━━━<br/>Response from V1 (Stable)"]
-        V2["🧪 Backend V2<br/>:8082<br/>Canary Version<br/>━━━━━━━━━━<br/>Response from V2 (Canary)"]
+    subgraph "Upstreams"
+        V1["✅ Backend V1<br/>(Stable)<br/>:8081"]
+        V2["🧪 Backend V2<br/>(Canary)<br/>:8082"]
     end
+
+    %% Pipeline Flow
+    Repo -->|1. Detect Change| Builder
+    Builder -->|2. Build & Upload<br/>authz.tar.gz| Server
+    Server -->|3. Poll Bundle| OPA
+
+    %% Request Flow
+    Client1 --> APISIX
+    Client2 --> APISIX
+    APISIX --> Lua
+    Lua -->|4. Authz Check<br/>{input: ...}| OPA
+    OPA -->|5. Decision<br/>{upstream: v2}| Lua
+    Lua -->|6. Route| V2
+    Lua -->|6. Default| V1
     
-    Client1 -->|"GET /<br/>x-user-id: alice"| APISIX
-    Client2 -->|"GET /<br/>x-user-id: beta_user"| APISIX
-    
-    APISIX --> Serverless
-    
-    Serverless -.->|"POST /v1/data/apisix/route<br/>{input: {request: {headers: {...}}}}"| OPA
-    OPA -.->|"Normal: {allow: true}<br/>Beta: {allow: true, headers: {X-Target-Upstream: v2}}"| Serverless
-    
-    TrafficSplit -->|"No v2 header<br/>Use default route"| V1
-    TrafficSplit -->|"Has X-Target-Upstream: v2<br/>Switch to Canary"| V2
-    
-    V1 -.->|"200 OK"| Client1
-    V2 -.->|"200 OK"| Client2
-    
-    style Client1 fill:#e1f5ff,stroke:#01579b,stroke-width:2px
-    style Client2 fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    style APISIX fill:#f3e5f5,stroke:#4a148c,stroke-width:3px
-    style OPA fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
-    style V1 fill:#e3f2fd,stroke:#0d47a1,stroke-width:2px
-    style V2 fill:#fff8e1,stroke:#f57f17,stroke-width:2px
-    style Serverless fill:#fce4ec,stroke:#880e4f,stroke-width:2px
-    style TrafficSplit fill:#f1f8e9,stroke:#33691e,stroke-width:2px
+    style Client1 fill:#e1f5ff,stroke:#01579b
+    style Client2 fill:#fff3e0,stroke:#e65100
+    style Builder fill:#fce4ec,stroke:#880e4f
+    style Server fill:#f3e5f5,stroke:#4a148c
+    style OPA fill:#e8f5e9,stroke:#1b5e20
+    style APISIX fill:#fff8e1,stroke:#f57f17
 ```
 
-## How It Works
+---
 
-### Normal User Flow (alice)
-1. **Client** sends request `GET /` with header `x-user-id: alice`
-2. **APISIX** receives request and executes `serverless-pre-function` plugin
-3. **Serverless Lua** extracts `x-user-id` and calls **OPA** API
-4. **OPA** evaluates policy.rego, finds `alice != beta_user`, returns `{allow: true}` (no extra headers)
-5. **Serverless** does not inject any headers
-6. **traffic-split** plugin checks for `X-Target-Upstream` header, finds none, uses default routing
-7. Request is routed to **Backend V1** (upstream_id: 1)
-8. **V1** returns `Response from V1 (Stable)`
+## Key Features
 
-### Beta User Flow (beta_user)
-1. **Client** sends request `GET /` with header `x-user-id: beta_user`
-2. **APISIX** receives request and executes `serverless-pre-function` plugin
-3. **Serverless Lua** extracts `x-user-id` and calls **OPA** API
-4. **OPA** evaluates policy.rego, finds `x-user-id == beta_user`, returns:
-   ```json
-   {
-     "allow": true,
-     "headers": {
-       "X-Target-Upstream": "v2"
-     }
-   }
-   ```
-5. **Serverless** injects `X-Target-Upstream: v2` into request headers
-6. **traffic-split** plugin detects `X-Target-Upstream == v2`, triggers routing rule
-7. Request is routed to **Backend V2** (upstream_id: 2)
-8. **V2** returns `Response from V2 (Canary)`
+1.  **Dynamic Routing**:
+    *   **Allowlist**: Specific users (e.g., `beta_user`) are routed to V2.
+    *   **Percentage Rollout**: Hash-based traffic splitting (e.g., 10% of users to V2).
+    
+2.  **Hybrid Bundle Workflow**:
+    *   **Policy (`.rego`)**: Static logic defining *how* to route.
+    *   **Data (`.json`)**: Dynamic configuration defining *who* to route.
+    *   **Bundle Builder**: Automatically packages and distributes updates without restarting OPA.
+
+3.  **Governance**:
+    *   Centralized policy management.
+    *   Audit logs for all routing decisions.
+
+---
+
+## Project Structure
+
+| Component | Path | Description |
+|-----------|------|-------------|
+| **Bundle Builder** | [`bundle-builder/`](bundle-builder/) | Java service that polls `policies/` and uploads bundles. |
+| **Bundle Server** | [`bundle-server/`](bundle-server/) | Simple HTTP server acting as the bundle artifact repo. |
+| **OPA Policies** | [`policies/backend/`](policies/backend/) | Rego logic and JSON data for canary routing. |
+| **Backend** | [`backend/`](backend/) | Simple Java HTTP server enabling V1/V2 responses. |
+| **APISIX Config** | [`apisix/apisix.yaml`](apisix/apisix.yaml) | Gateway configuration with embedded Lua script. |
+
+---
 
 ## Quick Start
 
-1. **Start all services**:
-   ```bash
-   docker-compose up -d --build
-   ```
+### 1. Prerequisites
+- Docker & Docker Compose
 
-2. **Check service status** (wait ~10-20 seconds for services to start):
-   ```bash
-   docker-compose ps
-   ```
+### 2. Start Services
+```bash
+docker-compose up -d --build
+```
 
-## Testing
-
-**Scenario 1: Normal User → V1 (Stable)**
+### 3. Verify Routing
+**Normal User (V1):**
 ```bash
 curl -H "x-user-id: alice" http://localhost:9080/
-# Expected Output: Response from V1 (Stable)
+# Output: Response from V1 (Stable)
 ```
 
-**Scenario 2: Beta User → V2 (Canary)**
+**Beta User (V2):**
 ```bash
 curl -H "x-user-id: beta_user" http://localhost:9080/
-# Expected Output: Response from V2 (Canary)
+# Output: Response from V2 (Canary)
 ```
 
-## Technical Details
+**Verify Bundle Update:**
+1. Edit `policies/backend/data.json` and add a new user.
+2. Wait ~20 seconds for propagation.
+3. Verify the new user is routed to V2.
 
-### Why Not Use Native OPA Plugin?
-This PoC initially attempted to use APISIX's native `opa` plugin but encountered `503` errors. After testing:
-- ✅ OPA service was reachable and functioning correctly
-- ✅ OPA returned correct policy decisions
-- ✅ Network connectivity was verified
-- ❌ Native `opa` plugin consistently failed
+---
 
-**Solution**: Use `serverless-pre-function` (Lua) to directly call OPA HTTP API, providing:
-- Complete error handling and logging
-- Better debugging transparency
-- More flexible header injection logic
+## Production Considerations
 
-### Key Configuration Files
+> [!IMPORTANT]
+> **Data Source Integration**
+>
+> In this PoC, the Bundle Builder reads `data.json` from the file system. In a production environment, this should be replaced with an API call to a configuration service or feature flag system.
+>
+> **Recommended implementation**:
+> ```java
+> // BuilderService.java
+> URL url = new URL("http://config-service/canary/rules");
+> String canaryData = fetchFromApi(url);
+> // ... package into bundle
+> ```
 
-- **[apisix/apisix.yaml](apisix/apisix.yaml)**: APISIX routing configuration and Lua script
-- **[opa/policy.rego](opa/policy.rego)**: OPA routing decision logic
-- **[docker-compose.yml](docker-compose.yml)**: Service orchestration
-
-## Troubleshooting
-
-**View APISIX logs**:
-```bash
-docker-compose logs -f apisix
-```
-
-**View OPA logs**:
-```bash
-docker-compose logs -f opa
-```
-
-**View Backend logs**:
-```bash
-docker-compose logs -f backend-v1
-docker-compose logs -f backend-v2
-```
-
-**Test OPA directly**:
-```bash
-curl -X POST http://localhost:8181/v1/data/apisix/route \
-  -H "Content-Type: application/json" \
-  -d '{"input":{"request":{"headers":{"x-user-id":"beta_user"}}}}'
-# Expected: {"result":{"allow":true,"headers":{"X-Target-Upstream":"v2"}}}
-```
-
-## Performance Metrics
-
-Based on test report ([TRAFFIC_FLOW_TEST_REPORT.md](TRAFFIC_FLOW_TEST_REPORT.md)):
-- OPA decision latency: ~0.25ms
-- End-to-end latency: ~8ms
-- Routing accuracy: 100%
-- Zero failed requests
+---
 
 ## Documentation
 
-- [TEST_REPORT.md](TEST_REPORT.md) - Complete test report
-- [TRAFFIC_FLOW_TEST_REPORT.md](TRAFFIC_FLOW_TEST_REPORT.md) - Traffic verification report
+- **[Test Plan](TEST_PLAN.md)**: Detailed test scenarios and strategy.
+- **[Test Report](TEST_REPORT.md)**: Evidence of successful verification.
+
