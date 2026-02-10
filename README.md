@@ -58,6 +58,32 @@ flowchart TB
     style APISIX fill:#fff8e1,stroke:#f57f17
 ```
 
+### Bundle Update Sequence
+
+The system automatically syncs policy changes from the file system to OPA.
+
+```mermaid
+sequenceDiagram
+    participant Repo as 📂 File System (policies/)
+    participant Builder as 🔧 Bundle Builder
+    participant Server as  Bundle Server
+    participant OPA as 🔐 OPA Sidecar
+
+    loop Every 10 Seconds
+        Builder->>Repo: Read Policy & Data
+        Repo-->>Builder: platform.rego, policy.rego, data.json
+        Note over Builder: Package into authz.tar.gz
+        Builder->>Server: PUT /bundles/authz.tar.gz
+        Server-->>Builder: 200 OK
+    end
+
+    loop Periodic Poll (Default)
+        OPA->>Server: GET /bundles/authz.tar.gz
+        Server-->>OPA: 200 OK (Bundle Content)
+        Note over OPA: Hot Reload Policies<br/>(No Restart Required)
+    end
+```
+
 ---
 
 ## Key Features
